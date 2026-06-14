@@ -14,7 +14,7 @@ from trading_bot.portfolio import Portfolio
 from trading_bot.prompts import load_prompts, save_prompts, reset_prompts
 from trading_bot.data_fetcher import fetch_prices
 from trading_bot.trader import run_trading_cycle
-from trading_bot.analyzer import analyze_and_suggest
+from trading_bot.analyzer import analyze_and_suggest, normalize_uploaded_row
 
 st.set_page_config(page_title="LLM Trading Bot", page_icon="📈", layout="wide")
 
@@ -31,6 +31,8 @@ if "analysis_result" not in st.session_state:
     st.session_state["analysis_result"] = None
 if "analysis_time" not in st.session_state:
     st.session_state["analysis_time"] = None
+if "analysis_source" not in st.session_state:
+    st.session_state["analysis_source"] = None
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -305,6 +307,15 @@ with tab2:
             hide_index=True,
         )
 
+        st.divider()
+        csv_bytes = filtered[display_cols].sort_values("timestamp", ascending=False).to_csv(index=False).encode()
+        st.download_button(
+            "⬇️ Download trade history as CSV",
+            data=csv_bytes,
+            file_name=f"trade_history_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+        )
+
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 3: Prompt Editor
 # ════════════════════════════════════════════════════════════════════════════
@@ -345,30 +356,108 @@ with tab3:
 with tab4:
     st.header("🔬 Strategy Analysis & Prompt Improvement")
     st.write(
-        "Send your trade history to the LLM and get specific suggestions for improving "
-        "your trading strategy prompt."
+        "Send trade history to the LLM and get specific suggestions for improving "
+        "your trading strategy prompt. Uses the bot's own history by default — or upload your own."
     )
 
-    if not api_key:
-        st.warning("⚠️ Enter an API key in the sidebar to use this feature.")
+    # ── History source selection ─────────────────────────────────────────────
+    st.subheader("Trade History Source")
+
+    internal_log = load_trade_log()
+    internal_count = len(internal_log)
+
+    history_source = st.radio(
+        "Which history should the LLM analyze?",
+        ["Bot's own trade history", "Upload my own CSV", "Merge both"],
+        horizontal=True,
+    )
+
+    uploaded_log = []
+    upload_error = None
+
+    if history_source in ("Upload my own CSV", "Merge both"):
+        st.markdown(
+            "Upload a CSV with columns: `timestamp` (or `date`), `ticker` (or `symbol`), "
+            "`action` (BUY/SELL/HOLD), `quantity` (or `shares`), `price`, "
+            "`realized_pnl` (optional), `rationale` (optional). "
+            "Column names are flexible — common variants are auto-mapped."
+        )
+        uploaded_file = st.file_uploader("Upload trade history CSV", type=["csv"])
+        if uploaded_file:
+            try:
+                import io
+                df_upload = pd.read_csv(io.StringIO(uploaded_file.read().decode("utf-8")))
+                uploaded_log = [normalize_uploaded_row(r) for r in df_upload.to_dict(orient="records")]
+                st.success(f"Loaded {len(uploaded_log)} trades from uploaded file.")
+                # Preview
+                st.dataframe(df_upload.head(5), use_container_width=True, hide_index=True)
+            except Exception as e:
+                upload_error = str(e)
+                st.error(f"Could not parse CSV: {e}")
+
+    # Build the combined log based on selection
+    if history_source == "Bot's own trade history":
+        analysis_log = internal_log
+        source_label = f"bot history ({internal_count} trades)"
+    elif history_source == "Upload my own CSV":
+        analysis_log = uploaded_log
+        source_label = f"uploaded CSV ({len(uploaded_log)} trades)"
     else:
-        if st.button("🧠 Analyze My Trading Strategy", type="primary"):
-            log = load_trade_log()
+        analysis_log = internal_log + uploaded_log
+        source_label = f"merged ({internal_count} bot + {len(uploaded_log)} uploaded trades)"
+
+    # ── History summary ──────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("History Summary")
+
+    ic1, ic2, ic3 = st.columns(3)
+    ic1.metric("Bot's recorded trades", internal_count)
+    ic2.metric("Uploaded trades", len(uploaded_log))
+    ic3.metric("Trades for analysis", len(analysis_log))
+
+    if internal_count > 0:
+        with st.expander("Preview bot's trade history"):
+            df_internal = pd.DataFrame(internal_log)
+            show_cols = [c for c in ["timestamp", "ticker", "action", "quantity", "price", "realized_pnl", "rationale"] if c in df_internal.columns]
+            st.dataframe(df_internal[show_cols].tail(20), use_container_width=True, hide_index=True)
+
+        csv_internal = pd.DataFrame(internal_log).to_csv(index=False).encode()
+        st.download_button(
+            "⬇️ Download bot history as CSV",
+            data=csv_internal,
+            file_name=f"bot_trade_history_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+        )
+
+    # ── Run analysis ─────────────────────────────────────────────────────────
+    st.divider()
+
+    if not api_key:
+        st.warning("⚠️ Enter an API key in the sidebar to run analysis.")
+    elif upload_error:
+        st.error("Fix the CSV upload error before running analysis.")
+    elif not analysis_log:
+        st.info("No trade history available. Run some trading cycles or upload a CSV.")
+    else:
+        if st.button(f"🧠 Analyze Strategy ({source_label})", type="primary"):
             prompts = load_prompts()
             with st.spinner("Analyzing trading performance..."):
-                suggestion = analyze_and_suggest(log, prompts, provider, api_key)
+                suggestion = analyze_and_suggest(analysis_log, prompts, provider, api_key)
             st.session_state["analysis_result"] = suggestion
             st.session_state["analysis_time"] = datetime.now()
+            st.session_state["analysis_source"] = source_label
 
-        if st.session_state.get("analysis_result"):
-            st.caption(f"Analysis run at: {st.session_state['analysis_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-            st.divider()
-            st.markdown("### LLM Suggestions")
-            st.markdown(
-                f"""<div style="background:#1e2130;padding:1.2rem;border-radius:8px;
-                border-left:4px solid #4CAF50;font-family:monospace;font-size:0.9rem;
-                white-space:pre-wrap">{st.session_state['analysis_result']}</div>""",
-                unsafe_allow_html=True,
-            )
-            if st.button("📋 Apply Suggestions to System Prompt"):
-                st.info("Review the suggestions above and manually paste them into the Prompt Editor tab, then save.")
+    if st.session_state.get("analysis_result"):
+        st.caption(
+            f"Analysis run at {st.session_state['analysis_time'].strftime('%Y-%m-%d %H:%M:%S')} "
+            f"· source: {st.session_state.get('analysis_source', 'unknown')}"
+        )
+        st.divider()
+        st.markdown("### LLM Suggestions")
+        st.markdown(
+            f'<div style="background:#1e2130;padding:1.2rem;border-radius:8px;'
+            f'border-left:4px solid #4CAF50;font-size:0.9rem;white-space:pre-wrap">'
+            f'{st.session_state["analysis_result"]}</div>',
+            unsafe_allow_html=True,
+        )
+        st.info("💡 To apply suggestions, copy the relevant text into the **Prompt Editor** tab and save.")

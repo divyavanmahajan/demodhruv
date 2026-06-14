@@ -14,6 +14,44 @@ actionable improvements to the trading strategy prompt. Focus on:
 Be concrete and specific. Output plain text with numbered recommendations."""
 
 
+def normalize_uploaded_row(row: dict) -> dict:
+    """Map common CSV column names to the internal trade record format."""
+    mapping = {
+        "date": "timestamp", "time": "timestamp", "datetime": "timestamp",
+        "symbol": "ticker", "stock": "ticker",
+        "side": "action", "type": "action", "transaction": "action",
+        "shares": "quantity", "qty": "quantity", "units": "quantity",
+        "cost": "price", "fill_price": "price", "exec_price": "price",
+        "pnl": "realized_pnl", "profit": "realized_pnl", "gain_loss": "realized_pnl",
+        "notes": "rationale", "comment": "rationale", "reason": "rationale",
+    }
+    normalized = {}
+    for k, v in row.items():
+        key = k.strip().lower().replace(" ", "_")
+        normalized[mapping.get(key, key)] = v
+
+    # Normalize action values to BUY/SELL/HOLD
+    action = str(normalized.get("action", "HOLD")).strip().upper()
+    for alias, canonical in [("B", "BUY"), ("S", "SELL"), ("H", "HOLD"), ("BUY", "BUY"), ("SELL", "SELL")]:
+        if action == alias:
+            action = canonical
+            break
+    normalized["action"] = action
+
+    # Ensure numeric fields
+    for field in ("quantity", "price", "realized_pnl"):
+        try:
+            normalized[field] = float(str(normalized.get(field, 0)).replace(",", "").replace("$", "") or 0)
+        except ValueError:
+            normalized[field] = 0.0
+
+    normalized.setdefault("ticker", "UNKNOWN")
+    normalized.setdefault("timestamp", datetime.now().isoformat())
+    normalized.setdefault("rationale", "(uploaded)")
+    normalized["_source"] = "uploaded"
+    return normalized
+
+
 def analyze_and_suggest(trade_log: list, prompts: dict, provider: str, api_key: str) -> str:
     if not trade_log:
         return "No trade history to analyze yet. Run some trading cycles first."
