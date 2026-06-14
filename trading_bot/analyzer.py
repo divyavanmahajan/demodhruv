@@ -2,8 +2,8 @@ from datetime import datetime
 from trading_bot.llm_client import get_trading_recommendations
 
 
-ANALYZER_SYSTEM_PROMPT = """You are a quantitative trading strategy analyst.
-Analyze the provided trading history and performance metrics, then suggest specific,
+ANALYZER_SYSTEM_PROMPT = """You are a quantitative trading strategy analyst. 
+Analyze the provided trading history and performance metrics, then suggest specific, 
 actionable improvements to the trading strategy prompt. Focus on:
 - Win rate and what's causing losses
 - Position sizing issues
