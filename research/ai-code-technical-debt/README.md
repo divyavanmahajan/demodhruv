@@ -37,6 +37,7 @@ research/ai-code-technical-debt/
   AI_Generated_Code_Technical_Debt.docx   the research paper (all links inline, references by theme)
   claims-and-sources.md                   claims table as markdown
   claims-and-sources.html                 claims table as the published artifact
+                                          (https://claude.ai/code/artifact/cf7222a7-ce60-4d34-87ff-642b7451369c)
 ```
 
 ## Rebuilding
